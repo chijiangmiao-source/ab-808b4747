@@ -1,0 +1,61 @@
+# 树状管网声学泄漏定位审计台 —— 一键启动
+#
+#   docker compose up --build        # 启动 Web 与 API
+#   docker compose run --rm verify   # 真实联调验收（一次性，按退出码报告）
+#
+# 可配置宿主机端口（在 .env 或环境变量中覆盖）：
+#   WEB_HOST_PORT  默认 8080
+#   API_HOST_PORT  默认 8000
+
+services:
+  api:
+    build:
+      context: ./backend
+    image: leak-localizer-api:latest
+    restart: unless-stopped
+    ports:
+      - "${API_HOST_PORT:-8000}:8000"
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://127.0.0.1:8000/api/health', timeout=2).status == 200 else 1)"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+      start_period: 5s
+
+  web:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: leak-localizer-web:latest
+    restart: unless-stopped
+    ports:
+      - "${WEB_HOST_PORT:-8080}:80"
+    depends_on:
+      api:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://127.0.0.1/"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+      start_period: 3s
+
+  # 一次性验收服务：对真实运行的 api / web 容器发起联调请求，
+  # 输出报告并以退出码表达结果（0 全部通过，非 0 存在失败）。
+  # 用 profile 隔离，docker compose up 不会启动它；执行：
+  #   docker compose run --rm verify
+  verify:
+    profiles: ["verify"]
+    build:
+      context: ./backend
+    image: leak-localizer-api:latest
+    depends_on:
+      api:
+        condition: service_healthy
+      web:
+        condition: service_healthy
+    environment:
+      API_BASE: http://api:8000
+      WEB_BASE: http://web:80
+    entrypoint: ["python", "scripts/verify_integration.py"]
+    restart: "no"
