@@ -1,0 +1,59 @@
+# 地下储气库树状管网泄漏定位审计台
+#
+# 宿主机端口可通过环境变量配置（.env 或 shell 导出）：
+#   WEB_HOST_PORT  Web 审计台端口，默认 8080
+#   API_HOST_PORT  原生 API 端口，默认 8000
+#
+# 一次性联调验收（真实联调，自动退出，退出码报告结果）：
+#   docker compose build
+#   docker compose run --rm verify ; echo "verify exit=$?"
+
+services:
+  api:
+    build:
+      context: ./backend
+    environment:
+      CORS_ORIGINS: "*"
+    ports:
+      - "${API_HOST_PORT:-8000}:8000"
+    healthcheck:
+      test: ["CMD", "python", "-c",
+             "import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://localhost:8000/health',timeout=3).status==200 else 1)"]
+      interval: 10s
+      timeout: 3s
+      retries: 6
+      start_period: 5s
+    restart: unless-stopped
+
+  web:
+    build:
+      context: ./frontend
+    ports:
+      - "${WEB_HOST_PORT:-8080}:80"
+    depends_on:
+      api:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q -O /dev/null http://localhost:80/ || exit 1"]
+      interval: 10s
+      timeout: 3s
+      retries: 6
+      start_period: 5s
+    restart: unless-stopped
+
+  verify:
+    # 一次性验收服务，不属于常驻栈；用 docker compose run --rm verify 触发。
+    profiles: ["verify"]
+    build:
+      context: ./backend
+      dockerfile: Dockerfile.verify
+    depends_on:
+      api:
+        condition: service_healthy
+      web:
+        condition: service_healthy
+    environment:
+      VERIFY_WEB_URL: "http://web:80"
+      VERIFY_API_URL: "http://api:8000"
+      VERIFY_DEADLINE: "60"
+    restart: "no"
